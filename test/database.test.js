@@ -96,6 +96,24 @@ test('assertReadOnlyQuery — SELECT — allows a single read statement', () => 
   assert.doesNotThrow(() => assertReadOnlyQuery('-- comment\nSELECT 1; /* trailing */'));
 });
 
+test('assertReadOnlyQuery — quoted identifier — reads as a name, not as syntax', () => {
+  assert.doesNotThrow(() => assertReadOnlyQuery('SELECT [Delete] FROM dbo.Users;'));
+  assert.doesNotThrow(() => assertReadOnlyQuery('SELECT [a], [b] FROM dbo.Users;'));
+  assert.doesNotThrow(() => assertReadOnlyQuery('SELECT [a;b] FROM dbo.Users;'));
+  assert.doesNotThrow(() => assertReadOnlyQuery('SELECT [a--b] FROM dbo.Users;'));
+  assert.doesNotThrow(() => assertReadOnlyQuery('SELECT [a]]b] FROM dbo.Users;'));
+});
+
+test('assertReadOnlyQuery — comment delimiter inside a quoted identifier — cannot hide a statement', () => {
+  for (const sql of [
+    'SELECT [a--] FROM dbo.Users; DELETE FROM dbo.Users;',
+    'SELECT [a/*] FROM dbo.Users; DELETE FROM dbo.Users;',
+    'SELECT [a]]--] FROM dbo.Users; DELETE FROM dbo.Users;',
+  ]) {
+    assert.throws(() => assertReadOnlyQuery(sql), /Read-only connections/);
+  }
+});
+
 test('assertReadOnlyQuery — write statement — rejects with a read-only violation', () => {
   for (const sql of [
     'DROP TABLE dbo.Users;',
@@ -103,6 +121,10 @@ test('assertReadOnlyQuery — write statement — rejects with a read-only viola
     'UPDATE dbo.Users SET Name = 1;',
     'INSERT INTO dbo.Users SELECT 1;',
     'SELECT 1; DROP TABLE dbo.Users;',
+    'SELECT 1; SELECT 2;',
+    'SELECT * INTO dbo.NewTable FROM dbo.Users;',
+    "SELECT * FROM (SELECT * FROM OPENROWSET('SQLNCLI', 'Server=evil;', 'SELECT 1') AS r) AS x;",
+    'USE Athena;',
   ]) {
     assert.throws(() => assertReadOnlyQuery(sql), /Read-only connections/);
   }

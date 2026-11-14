@@ -190,13 +190,13 @@ async function main() {
   HAS_PERMS_BY_NAME('dbo._DIM_BranchGroup', 'OBJECT', 'CONTROL') AS object_control`,
       );
       const fingerprint = await directQuery(pool, FINGERPRINT_SQL);
-      const openTransactions = await directQuery(
+      const visibleSessions = await directQuery(
         pool,
-        `SELECT TOP (10) COUNT_BIG(1) AS sessions_with_open_transaction
+        `SELECT TOP (10) COUNT_BIG(1) AS visible_sessions
 FROM sys.dm_exec_sessions s
-WHERE s.login_name = SUSER_SNAME() AND s.open_transaction_count > 0`,
+WHERE s.login_name = SUSER_SNAME()`,
       );
-      return { identity, crossDb, tableColumns, objectPerms, fingerprint, openTransactions };
+      return { identity, crossDb, tableColumns, objectPerms, fingerprint, visibleSessions };
     });
 
     const identity = Object.fromEntries(
@@ -293,11 +293,19 @@ WHERE s.login_name = SUSER_SNAME() AND s.open_transaction_count > 0`,
       count: Number(crossDb.database_count),
     });
 
-    // 6. No write transaction is open on production before the drive.
-    const openTransactions = live.openTransactions.rows[0][0];
-    report.check('production.no-open-write-transaction', Number(openTransactions) === 0, {
-      expected: 0,
-      actual: Number(openTransactions),
+    // 6. Without VIEW SERVER STATE this DMV shows one session, the caller's. An open transaction held
+    // by another session is therefore invisible, and the old "no open write transaction" check was
+    // true no matter what production did. Assert the one thing the query can establish, which is
+    // that exactly one session is visible. If this login ever gains server state, the count rises
+    // and the limitation it depends on shows up as a failure instead of hiding one.
+    const visibleSessions = Number(live.visibleSessions.rows[0][0]);
+    report.check('production.dmv-sees-only-this-session', visibleSessions === 1, {
+      expected: 1,
+      actual: visibleSessions,
+    });
+    report.note('production.open-transaction-invisible', {
+      reason:
+        'VIEW SERVER STATE = 0, so sys.dm_exec_sessions shows only the doctor session; a write transaction held elsewhere cannot be seen from this login',
     });
 
     const proof = {

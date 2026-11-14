@@ -86,9 +86,19 @@ function stringQuoteAt(syntax, char) {
 
 function identifierAt(text, index, syntax) {
   for (const entry of syntax.identifierQuotes) {
-    if (text.startsWith(entry.open, index)) {
-      const close = text.indexOf(entry.close, index + entry.open.length);
-      return { end: close === -1 ? text.length : close };
+    if (!text.startsWith(entry.open, index)) continue;
+    let cursor = index + entry.open.length;
+    while (cursor <= text.length) {
+      const close = text.indexOf(entry.close, cursor);
+      if (close === -1) return { end: text.length };
+      // A doubled close delimiter is one literal character inside the identifier, so the identifier
+      // continues. Treating it as the end would hand the rest of `[a]]--]` back to the scanner as
+      // code, where `--` starts a comment and the remainder disappears.
+      if (text.startsWith(entry.close, close + entry.close.length)) {
+        cursor = close + entry.close.length * 2;
+        continue;
+      }
+      return { end: close + entry.close.length };
     }
   }
   return null;
@@ -152,6 +162,15 @@ function splitStatements(text, syntax) {
       i += 1;
       continue;
     }
+    // Quoted identifiers are copied whole, before comments are considered: `[a--b]` is a name, not
+    // a comment start, and `[a;b]` is a name, not a statement boundary. The server reads them that
+    // way, so a scanner that does not would either split one statement into two or drop the tail.
+    const identifier = identifierAt(text, i, syntax);
+    if (identifier) {
+      current += text.slice(i, identifier.end);
+      i = identifier.end;
+      continue;
+    }
     if (lineCommentAt(text, i, syntax)) {
       while (i < text.length && text[i] !== '\n') i += 1;
       continue;
@@ -210,7 +229,8 @@ function tokenizeWords(statement, syntax) {
     }
     const identifier = identifierAt(statement, i, syntax);
     if (identifier) {
-      i = identifier.end;
+      // `end` is already past the closing delimiter, and the loop increments once more.
+      i = identifier.end - 1;
       continue;
     }
     if (char === '(') {
