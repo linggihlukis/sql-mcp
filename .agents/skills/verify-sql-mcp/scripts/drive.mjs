@@ -339,7 +339,8 @@ async function main() {
     // shape so the map cannot silently claim a field the client never receives.
     report.check(
       'schema.describe-no-foreign-key-field',
-      describedColumns.every((column) => !('is_foreign_key' in column)),
+      describedColumns.length > 0 &&
+        describedColumns.every((column) => !('is_foreign_key' in column)),
       describedColumns,
     );
 
@@ -477,25 +478,36 @@ async function main() {
     );
 
     // The bound, not the byte cap, is what cuts a preview of a large table. `clampResult` reports
-    // `truncated: false` there (the row count it compares is the post-LIMIT count), and the handler
-    // drops the key; only the byte cap can make it true. A verifier reading "truncated when the
-    // preview was cut" would assert the opposite, so pin the observable.
+    // `truncated: false` there (it compares the count of rows `TOP (100)` already fetched), and the
+    // handler drops the key, so only the byte cap can make it true. The witness decides whether the
+    // data can exercise the bound, so a wrong bound fails this check instead of skipping it.
+    const cutRows = Number(
+      (
+        await withDirectConnection(({ pool }) =>
+          directQuery(pool, `SELECT COUNT_BIG(1) AS n FROM [dbo].[${PREVIEW_CUT_TABLE}]`),
+        )
+      ).rows[0][0],
+    );
     const cutOpen = await callA('open_table', {
       connection: CONNECTION_NAME,
       schema: READ_SCHEMA,
       table: PREVIEW_CUT_TABLE,
     });
     const cutPreview = cutOpen.value?.preview;
-    if (cutPreview?.row_count === 100) {
-      report.check('open.preview-row-cut-not-truncated', cutPreview.truncated !== true, {
-        row_count: cutPreview.row_count,
-        truncated: cutPreview.truncated ?? 'absent',
-      });
+    if (cutRows > 100) {
+      report.check(
+        'open.preview-row-cut',
+        cutPreview?.row_count === 100 && cutPreview.truncated !== true,
+        {
+          witness_rows: cutRows,
+          row_count: cutPreview?.row_count ?? null,
+          truncated: cutPreview?.truncated ?? 'absent',
+          error: cutOpen.isError ? cutOpen.text : undefined,
+        },
+      );
     } else {
       report.note('open.preview-row-cut-skipped', {
-        reason: `${PREVIEW_CUT_TABLE} no longer holds more than the 100-row preview bound`,
-        row_count: cutPreview?.row_count ?? null,
-        error: cutOpen.isError ? cutOpen.text : undefined,
+        reason: `${PREVIEW_CUT_TABLE} holds ${cutRows} rows, not more than the 100-row bound`,
       });
     }
 
@@ -751,8 +763,12 @@ async function main() {
     );
     report.check(
       'read.values-sessions-agree',
-      JSON.stringify(readAValue?.rows) === JSON.stringify(readBValue?.rows),
-      null,
+      // Both sides must parse. Two unparseable results are both `undefined`, and comparing those
+      // would report agreement between a tool that returned no result at all.
+      Array.isArray(readAValue?.rows) &&
+        Array.isArray(readBValue?.rows) &&
+        JSON.stringify(readAValue.rows) === JSON.stringify(readBValue.rows),
+      { sessionA: readAValue?.rows, sessionB: readBValue?.rows },
     );
 
     // Row shape: the declared column contract, checked against the catalog and the direct read.
@@ -784,6 +800,27 @@ async function main() {
         typeof readAValue?.truncated === 'boolean',
       { rows: readAValue?.rows?.length, truncated: readAValue?.truncated },
     );
+
+    // The cap, exercised where it bites. The statement returns 1000 rows and the caller asks for 5,
+    // so the boundary is a real cut: five rows kept, `truncated` true and exact. The dialect streams,
+    // so the other 995 rows are counted and dropped instead of being held.
+    const cappedRead = await callA('execute_sql', {
+      connection: CONNECTION_NAME,
+      row_limit: 5,
+      sql: `SELECT TOP (1000) * FROM dbo.${PREVIEW_CUT_TABLE}`,
+    });
+    report.check(
+      'read.capped-by-row-limit',
+      cappedRead.value?.row_count === 5 &&
+        cappedRead.value?.rows?.length === 5 &&
+        cappedRead.value?.truncated === true,
+      {
+        row_count: cappedRead.value?.row_count,
+        rows: cappedRead.value?.rows?.length,
+        truncated: cappedRead.value?.truncated,
+        error: cappedRead.isError ? cappedRead.text : undefined,
+      },
+    );
     report.check(
       'read.catalog-agrees-with-returned-columns',
       JSON.stringify(before.columns.rows.map((row) => row[1])) === JSON.stringify(directColumnNames),
@@ -791,6 +828,31 @@ async function main() {
         catalog: before.columns.rows.map((row) => row[1]),
         direct: directColumnNames,
       },
+    );
+
+    // The guard's own properties, proven through a real session. Both statements are reads, so a
+    // regression that let them through would return rows rather than mutate anything. Each check
+    // matches the refusal message, so a plain SQL error cannot pass as a refusal.
+    const batchProbe = await callA('execute_sql', {
+      connection: CONNECTION_NAME,
+      row_limit: 5,
+      sql: 'SELECT TOP (1) Id FROM dbo._DIM_BranchGroup; SELECT TOP (1) Id FROM dbo._DIM_BranchGroup',
+    });
+    report.check(
+      'guard.multi-statement-refused',
+      batchProbe.isError === true && /Read-only connections/.test(batchProbe.text),
+      { isError: batchProbe.isError, text: batchProbe.text.slice(0, 200) },
+    );
+
+    const bracketProbe = await callA('execute_sql', {
+      connection: CONNECTION_NAME,
+      row_limit: 5,
+      sql: 'SELECT TOP (1) Id AS [a--] FROM dbo._DIM_BranchGroup; SELECT TOP (1) Id FROM dbo._DIM_BranchGroup',
+    });
+    report.check(
+      'guard.identifier-cannot-hide-a-statement',
+      bracketProbe.isError === true && /Read-only connections/.test(bracketProbe.text),
+      { isError: bracketProbe.isError, text: bracketProbe.text.slice(0, 200) },
     );
 
     // ---------------------------------------------------------------- write refusal, part 1
@@ -858,10 +920,14 @@ async function main() {
     // (meaning the configured one) or name Uranus explicitly.
     const scope = auditCallScope(runDir, redact);
     results.databaseScope = scope;
-    report.check('safety.single-database', scope.violations.length === 0, {
+    report.check('safety.arguments-name-one-database', scope.violations.length === 0, {
       callsAudited: scope.callsAudited,
       databasesNamed: scope.databasesNamed,
       violations: scope.violations,
+    });
+    report.note('safety.sql-text-not-parsed', {
+      reason:
+        'the audit reads the connection and database arguments each call sent; a three-part name inside the SQL text is permitted by the database argument contract, so the text is not parsed',
     });
     // The audit must have seen both sessions, or it is not covering the whole drive.
     report.check('safety.scope-audit-covers-both-sessions', scope.sessions.length === 2, {

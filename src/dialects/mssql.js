@@ -94,18 +94,55 @@ export function columnDescriptors(columns) {
     name,
     data_type: columnType(metadata ?? {}),
     default_value: null,
-    is_nullable: null,
+    // Streaming hands back this object shape, and its metadata does carry `nullable`.
+    is_nullable: typeof metadata?.nullable === 'boolean' ? metadata.nullable : null,
     is_primary_key: false,
     is_foreign_key: false,
   }));
 }
 
-async function runQuery(pool, sqlText) {
+/**
+ * Runs one statement, keeping at most `rowLimit` rows while counting every row the server sent.
+ *
+ * Rows stream rather than buffer, so a statement with no bound of its own cannot exhaust the
+ * process's memory. The count stays exact, which keeps `truncated` exact: the cap decides what a
+ * caller receives, and the count decides whether it was cut.
+ */
+async function runQuery(pool, sqlText, { rowLimit } = {}) {
   const request = pool.request();
-  request.arrayRowMode = true;
-  const result = await request.query(sqlText);
-  const rows = result.recordset ?? [];
-  return { columns: columnDescriptors(result.columns), rows, totalRows: rows.length };
+  request.stream = true;
+  const keep = Number.isInteger(rowLimit) && rowLimit > 0 ? rowLimit : Number.POSITIVE_INFINITY;
+  return await new Promise((resolve, reject) => {
+    let columns = [];
+    const rows = [];
+    let totalRows = 0;
+    let settled = false;
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    };
+    request.on('recordset', (descriptors) => {
+      columns = columnDescriptors(descriptors);
+    });
+    request.on('row', (row) => {
+      totalRows += 1;
+      if (rows.length < keep && columns.length > 0) {
+        rows.push(columns.map((column) => row[column.name]));
+      }
+    });
+    request.on('error', fail);
+    request.on('done', () => {
+      if (settled) return;
+      settled = true;
+      resolve({ columns, rows, totalRows });
+    });
+    try {
+      request.query(sqlText);
+    } catch (error) {
+      fail(error);
+    }
+  });
 }
 
 async function runPlan(pool, { sql: text, params = {} }) {

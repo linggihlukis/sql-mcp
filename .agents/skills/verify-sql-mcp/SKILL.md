@@ -121,6 +121,11 @@ node .agents/skills/verify-sql-mcp/scripts/drive.mjs --run <run dir printed by d
    - the MCP guard rejecting the call (`isError: true`, message naming the statement), and
    - SQL Server denying the same statement over a direct connection, independently of the guard,
      with error `229`.
+
+   Two further guard properties are proven live, and both probes are all reads so a broken guard
+   returns rows rather than mutating anything: a second statement is refused even when both are
+   reads (`guard.multi-statement-refused`), and a `--` inside a quoted identifier cannot hide one
+   (`guard.identifier-cannot-hide-a-statement`).
 4. **Nothing mutated.** A row count plus `CHECKSUM_AGG(BINARY_CHECKSUM(...))` fingerprint is taken
    before and after and must match.
 5. **One database only.** Every `tools/call` frame the drive recorded is audited: each must name

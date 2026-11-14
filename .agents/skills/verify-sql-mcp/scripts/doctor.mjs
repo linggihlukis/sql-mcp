@@ -44,6 +44,8 @@ const WRITE_PERMISSIONS = [
   'ALTER',
   'CREATE TABLE',
   'CONTROL',
+  'REFERENCES',
+  'TAKE OWNERSHIP',
 ];
 
 const SERVER_WRITE_PERMISSIONS = ['CREATE ANY DATABASE', 'CONTROL SERVER', 'ALTER ANY DATABASE'];
@@ -75,12 +77,16 @@ function configFacts(raw, connection) {
 }
 
 function permissionQuery() {
-  const columns = WRITE_PERMISSIONS.map(
-    (permission) =>
-      `  HAS_PERMS_BY_NAME(DB_NAME(), 'DATABASE', '${permission}') AS can_${permission
-        .toLowerCase()
-        .replaceAll(' ', '_')}`,
-  ).join(',\n');
+  const columns = [
+    ...WRITE_PERMISSIONS.map(
+      (permission) =>
+        `  HAS_PERMS_BY_NAME(DB_NAME(), 'DATABASE', '${permission}') AS can_${permission
+          .toLowerCase()
+          .replaceAll(' ', '_')}`,
+    ),
+    // Measured, not asserted: see the note this feeds.
+    "  HAS_PERMS_BY_NAME(DB_NAME(), 'DATABASE', 'EXECUTE') AS can_execute",
+  ].join(',\n');
   const serverColumns = SERVER_WRITE_PERMISSIONS.map(
     (permission) =>
       `  HAS_PERMS_BY_NAME(NULL, NULL, '${permission}') AS can_${permission
@@ -190,13 +196,13 @@ async function main() {
   HAS_PERMS_BY_NAME('dbo._DIM_BranchGroup', 'OBJECT', 'CONTROL') AS object_control`,
       );
       const fingerprint = await directQuery(pool, FINGERPRINT_SQL);
-      const openTransactions = await directQuery(
+      const visibleSessions = await directQuery(
         pool,
-        `SELECT TOP (10) COUNT_BIG(1) AS sessions_with_open_transaction
+        `SELECT TOP (10) COUNT_BIG(1) AS visible_sessions
 FROM sys.dm_exec_sessions s
-WHERE s.login_name = SUSER_SNAME() AND s.open_transaction_count > 0`,
+WHERE s.login_name = SUSER_SNAME()`,
       );
-      return { identity, crossDb, tableColumns, objectPerms, fingerprint, openTransactions };
+      return { identity, crossDb, tableColumns, objectPerms, fingerprint, visibleSessions };
     });
 
     const identity = Object.fromEntries(
@@ -227,7 +233,9 @@ WHERE s.login_name = SUSER_SNAME() AND s.open_transaction_count > 0`,
     });
     for (const permission of WRITE_PERMISSIONS) {
       const key = `can_${permission.toLowerCase().replaceAll(' ', '_')}`;
-      report.check(`perms.${key}-denied`, identity[key] === 0, {
+      // `Number.isInteger` matters: an unsupported permission name makes HAS_PERMS_BY_NAME return
+      // NULL, and a bare `=== 0` would then pass without measuring anything.
+      report.check(`perms.${key}-denied`, Number.isInteger(identity[key]) && identity[key] === 0, {
         expected: 0,
         actual: identity[key],
       });
@@ -258,6 +266,13 @@ WHERE s.login_name = SUSER_SNAME() AND s.open_transaction_count > 0`,
     report.check('perms.db-ddladmin-denied', identity.is_ddladmin === 0, {
       expected: 0,
       actual: identity.is_ddladmin,
+    });
+    // EXECUTE is granted to this login at server scope (write-refusal.md records `EXEC sp_who`
+    // succeeding), so asserting it denied would be false. The guard is what refuses EXEC, and the
+    // drive proves that refusal; record the measured value so a change in it is visible.
+    report.note('perms.execute-measured', {
+      databaseScope: identity.can_execute,
+      reason: 'EXECUTE is granted at server scope on this instance, so the guard is the enforcement point',
     });
 
     // 4. Object-level permission on the exact table the read journey uses.
@@ -293,11 +308,19 @@ WHERE s.login_name = SUSER_SNAME() AND s.open_transaction_count > 0`,
       count: Number(crossDb.database_count),
     });
 
-    // 6. No write transaction is open on production before the drive.
-    const openTransactions = live.openTransactions.rows[0][0];
-    report.check('production.no-open-write-transaction', Number(openTransactions) === 0, {
-      expected: 0,
-      actual: Number(openTransactions),
+    // 6. Without VIEW SERVER STATE this DMV shows one session, the caller's. An open transaction held
+    // by another session is therefore invisible, and the old "no open write transaction" check was
+    // true no matter what production did. Assert the one thing the query can establish, which is
+    // that exactly one session is visible. If this login ever gains server state, the count rises
+    // and the limitation it depends on shows up as a failure instead of hiding one.
+    const visibleSessions = Number(live.visibleSessions.rows[0][0]);
+    report.check('production.dmv-sees-only-this-session', visibleSessions === 1, {
+      expected: 1,
+      actual: visibleSessions,
+    });
+    report.note('production.open-transaction-invisible', {
+      reason:
+        'VIEW SERVER STATE = 0, so sys.dm_exec_sessions shows only the doctor session; a write transaction held elsewhere cannot be seen from this login',
     });
 
     const proof = {

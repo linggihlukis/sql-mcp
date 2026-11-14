@@ -170,10 +170,16 @@ function gap3() {
         clientInfo: { name: 'gap-check', version: '1' },
       });
       child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} })}\n`);
-      // Open a pool, which is what makes the process linger.
-      await request('tools/call', {
+      // This script has no live database, so this call cannot open a pool: the connection name is
+      // deliberately one the config does not declare. The check below therefore proves only that a
+      // live server exits promptly on stdin close. The pool-open case is proven against production
+      // by drive.mjs (`lifecycle.stdin-eof-exits`).
+      const call = await request('tools/call', {
         name: 'execute_sql',
         arguments: { connection: 'sqlserver_prod', sql: 'SELECT TOP (1) 1 AS x' },
+      });
+      record('the server answered before stdin closed', call?.result !== undefined || call?.error !== undefined, {
+        answered: call?.result !== undefined || call?.error !== undefined,
       });
       const started = Date.now();
       child.stdin.end();
@@ -181,12 +187,12 @@ function gap3() {
         if (exited !== null) {
           clearInterval(timer);
           const elapsedMs = Date.now() - started;
-          record('closing stdin exits promptly after a pool is open', elapsedMs < 3000, { elapsedMs, code: exited });
+          record('closing stdin exits promptly', elapsedMs < 3000, { elapsedMs, code: exited });
           resolve();
         } else if (Date.now() - started > 8000) {
           clearInterval(timer);
           child.kill('SIGKILL');
-          record('closing stdin exits promptly after a pool is open', false, { elapsedMs: Date.now() - started, code: null });
+          record('closing stdin exits promptly', false, { elapsedMs: Date.now() - started, code: null });
           resolve();
         }
       }, 100);

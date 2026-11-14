@@ -23,7 +23,7 @@ function fakeDatabase({ rows = [], fields = [], readOnly = true } = {}) {
         calls.push(['ready', options]);
         return [[{ ping: 1 }], []];
       }
-      calls.push(['query', options.sql, options.values]);
+      calls.push(['query', options.sql, options.values, options.timeout]);
       return [rows, fields];
     }
 
@@ -205,8 +205,8 @@ test('mysql manager — describe_table — reads the catalog and keeps the schem
   assert.deepEqual(database.calls.at(-1), ['end']);
 });
 
-test('mysql manager — query — sends the statement with the row cap and the connection timeout', async () => {
-  const database = fakeDatabase({ rows: [[1]], fields: [{ name: 'v', columnType: 8, flags: 1 }] });
+test('mysql manager — query — sends the row cap, the values and the connection timeout', async () => {
+  const database = fakeDatabase({ rows: [[1], [2]], fields: [{ name: 'v', columnType: 8, flags: 1 }] });
   const result = await database.query('laragon', 'SELECT 1 AS v', { rowLimit: 10 });
   assert.deepEqual(result.columns, [{
     name: 'v',
@@ -216,9 +216,20 @@ test('mysql manager — query — sends the statement with the row cap and the c
     is_primary_key: false,
     is_foreign_key: false,
   }]);
-  assert.deepEqual(result.rows, [[1]]);
+  assert.deepEqual(result.rows, [[1], [2]]);
   assert.equal(result.truncated, false);
-  assert.deepEqual(database.calls.at(-1), ['query', 'SELECT 1 AS v', undefined]);
+  const last = database.calls.at(-1);
+  assert.equal(last[1], 'SELECT 1 AS v');
+  assert.equal(last[2], undefined);
+  assert.equal(last[3], 1000);
+});
+
+test('mysql manager — query — applies the row cap to what the caller receives', async () => {
+  const database = fakeDatabase({ rows: [[1], [2], [3]], fields: [{ name: 'v', columnType: 8, flags: 1 }] });
+  const result = await database.query('laragon', 'SELECT 1 AS v', { rowLimit: 1 });
+  assert.deepEqual(result.rows, [[1]]);
+  assert.equal(result.row_count, 1);
+  assert.equal(result.truncated, true);
 });
 
 test('mysql manager — read-only — refuses a write before the pool opens', async () => {

@@ -9,6 +9,9 @@ guarantee that makes it safe to point an agent at production at all.
 - `write-guard` rejects `INSERT`, `UPDATE`, `DELETE`, `MERGE`, `EXEC`, DDL, and multi-statement
   payloads before any connection is opened.
 - `write-guard-comments` rejects a write hidden behind SQL comments.
+- `write-guard-identifiers` rejects a statement hidden behind a quoted identifier.
+- `write-guard-batch` rejects a second statement even when both statements are reads, so the rule
+  is testable without relying on permissions.
 - `write-server-denial` fails with SQL Server error `229` even with the guard bypassed.
 - `write-no-mutation` leaves the row count and row fingerprint unchanged.
 - `write-no-dedicated-tool` records that no dedicated write tool exists; `execute_sql` is the direct
@@ -37,6 +40,17 @@ Preconditions:
 - **Guard rejects UPDATE.** Call `execute_sql` with
   `UPDATE dbo._DIM_BranchGroup SET Name = Name WHERE 1 = 0`. The response has `isError: true` and
   the text contains `Read-only connections reject "UPDATE" statements.`
+- **Guard rejects a second statement.** Call `execute_sql` with
+  `SELECT TOP (1) Id FROM dbo._DIM_BranchGroup; SELECT TOP (1) Id FROM dbo._DIM_BranchGroup`. Both
+  statements are reads, so a broken guard returns rows instead of mutating a row. The response has
+  `isError: true` and the text contains
+  `Read-only connections accept a single read statement per call.`
+- **A quoted identifier cannot hide a statement.** Call `execute_sql` with
+  `SELECT TOP (1) Id AS [a--] FROM dbo._DIM_BranchGroup; SELECT TOP (1) Id FROM dbo._DIM_BranchGroup`.
+  The alias is an identifier, so the server reads `--` as part of a name, not as a comment. The
+  second statement must still be seen and refused, with the same text. Before 2026-11-14 the
+  scanner read `--` inside `[...]` as a comment and lost the second statement; this probe fails on
+  that version.
 - **Server denies it independently.** With no MCP in the path, send the same two statements over a
   direct `mssql` connection. Both must fail with error number `229`
   (`The INSERT/UPDATE permission was denied on the object ...`). This proves the guarantee comes
@@ -44,15 +58,16 @@ Preconditions:
 - **Nothing changed.** Compare the row count and `CHECKSUM_AGG(BINARY_CHECKSUM(Id, Name, IsEnable))`
   before and after. They must be identical.
 - **Proof.** Keep `drive.json` (`write.guard-rejects-*`, `write.server-denies-*`,
-  `write.server-error-229-*`, `safety.fingerprint-unchanged`) and the corresponding frames in
-  `frames-A-raw.jsonl`.
+  `write.server-error-229-*`, `guard.multi-statement-refused`,
+  `guard.identifier-cannot-hide-a-statement`, `safety.fingerprint-unchanged`) and the corresponding
+  frames in `frames-A-raw.jsonl`.
 
 ## Gotchas
 
 - **The negative test must stay safe if the guard is broken.** Use statements the login cannot
   execute and that touch zero rows: `SELECT TOP (0)` and `WHERE 1 = 0`. A plain
-  `DELETE FROM dbo._DIM_BranchGroup` is *not* acceptable as a probe — it relies on the guard, which
-  is the thing under test.
+  `DELETE FROM dbo._DIM_BranchGroup` is *not* acceptable as a probe. The same rule governs the two
+  guard probes above: they are all reads, so a broken guard returns rows instead of changing data.
 - **Never use `BEGIN TRAN ... ROLLBACK`.** It holds locks on a production table and blocks real
   users. The read-only proof is the safety net.
 - `EXEC sp_who` succeeds for this login (`EXECUTE` is granted at server level in some paths). Do not
