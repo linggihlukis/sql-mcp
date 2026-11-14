@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import { DatabaseManager, assertReadOnlyQuery, normalizeResult } from '../src/database.js';
 import { createMssqlDialect, quoteIdentifier, quoteMultipartIdentifier } from '../src/dialects/mssql.js';
@@ -152,16 +153,16 @@ test('DatabaseManager — read-only connection — rejects writes before opening
     }
 
     request() {
-      return {
-        arrayRowMode: false,
-        query: async (sql) => {
-          calls.push(['query', sql]);
-          return {
-            columns: [{ name: 'value', type: { declaration: 'int' }, nullable: false }],
-            recordset: [[1]],
-          };
-        },
+      const request = new EventEmitter();
+      request.query = (sql) => {
+        calls.push(['query', sql]);
+        request.emit('recordset', {
+          value: { name: 'value', type: { declaration: 'int' }, nullable: false },
+        });
+        request.emit('row', { value: 1 });
+        request.emit('done');
       };
+      return request;
     }
 
     async close() {
@@ -183,4 +184,43 @@ test('DatabaseManager — read-only connection — rejects writes before opening
   assert.deepEqual(calls, [['connect', 'master'], ['query', 'SELECT 1']]);
   await manager.close();
   assert.deepEqual(calls.at(-1), ['close']);
+});
+
+test('DatabaseManager — streaming read — keeps the cap and counts every row', async () => {
+  const seen = [];
+  class StreamingPool {
+    async connect() {
+      return this;
+    }
+
+    request() {
+      const request = new EventEmitter();
+      request.query = (sql) => {
+        seen.push(['query', sql]);
+        request.emit('recordset', {
+          id: { name: 'id', type: { declaration: 'int' }, nullable: false },
+        });
+        for (let row = 1; row <= 10; row += 1) {
+          // A reader that ignored the cap would keep all ten of these objects alive.
+          request.emit('row', { id: row, padding: 'x'.repeat(64) });
+        }
+        request.emit('done');
+      };
+      return request;
+    }
+
+    async close() {}
+  }
+
+  const manager = new DatabaseManager(fakeConfig(), {
+    dialects: { mssql: createMssqlDialect({ driver: { ConnectionPool: StreamingPool } }) },
+  });
+  const result = await manager.query('local', 'SELECT id FROM dbo.t', { rowLimit: 3 });
+  // The connection's max_row_limit is 2, so the cap is the clamp, not the request.
+  assert.deepEqual(result.rows, [[1], [2]]);
+  assert.equal(result.row_count, 2);
+  assert.equal(result.truncated, true);
+  assert.equal(result.columns[0].is_nullable, false);
+  assert.deepEqual(seen, [['query', 'SELECT id FROM dbo.t']]);
+  await manager.close();
 });

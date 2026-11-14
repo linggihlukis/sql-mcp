@@ -144,6 +144,18 @@ function main() {
     }
   }
 
+  // The pid list comes from the frames. With no frames there is no evidence of what this run
+  // started, so calling it clean would claim a teardown nothing checked.
+  const frameFiles = fs.readdirSync(runDir).filter(
+    (name) => name.startsWith('frames-') && name.endsWith('.jsonl'),
+  );
+  if (frameFiles.length === 0) {
+    result.unverified.push({
+      reason:
+        'no frames-*.jsonl in this run directory, so no process this run started could be identified',
+    });
+  }
+
   const clean = result.unverified.length === 0 && result.skipped.length === 0;
   result.clean = clean;
   fs.writeFileSync(path.join(runDir, 'cleanup.json'), `${JSON.stringify(result, null, 2)}\n`);

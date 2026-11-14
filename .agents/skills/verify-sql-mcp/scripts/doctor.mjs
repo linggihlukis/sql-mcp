@@ -44,6 +44,8 @@ const WRITE_PERMISSIONS = [
   'ALTER',
   'CREATE TABLE',
   'CONTROL',
+  'REFERENCES',
+  'TAKE OWNERSHIP',
 ];
 
 const SERVER_WRITE_PERMISSIONS = ['CREATE ANY DATABASE', 'CONTROL SERVER', 'ALTER ANY DATABASE'];
@@ -75,12 +77,16 @@ function configFacts(raw, connection) {
 }
 
 function permissionQuery() {
-  const columns = WRITE_PERMISSIONS.map(
-    (permission) =>
-      `  HAS_PERMS_BY_NAME(DB_NAME(), 'DATABASE', '${permission}') AS can_${permission
-        .toLowerCase()
-        .replaceAll(' ', '_')}`,
-  ).join(',\n');
+  const columns = [
+    ...WRITE_PERMISSIONS.map(
+      (permission) =>
+        `  HAS_PERMS_BY_NAME(DB_NAME(), 'DATABASE', '${permission}') AS can_${permission
+          .toLowerCase()
+          .replaceAll(' ', '_')}`,
+    ),
+    // Measured, not asserted: see the note this feeds.
+    "  HAS_PERMS_BY_NAME(DB_NAME(), 'DATABASE', 'EXECUTE') AS can_execute",
+  ].join(',\n');
   const serverColumns = SERVER_WRITE_PERMISSIONS.map(
     (permission) =>
       `  HAS_PERMS_BY_NAME(NULL, NULL, '${permission}') AS can_${permission
@@ -227,7 +233,9 @@ WHERE s.login_name = SUSER_SNAME()`,
     });
     for (const permission of WRITE_PERMISSIONS) {
       const key = `can_${permission.toLowerCase().replaceAll(' ', '_')}`;
-      report.check(`perms.${key}-denied`, identity[key] === 0, {
+      // `Number.isInteger` matters: an unsupported permission name makes HAS_PERMS_BY_NAME return
+      // NULL, and a bare `=== 0` would then pass without measuring anything.
+      report.check(`perms.${key}-denied`, Number.isInteger(identity[key]) && identity[key] === 0, {
         expected: 0,
         actual: identity[key],
       });
@@ -258,6 +266,13 @@ WHERE s.login_name = SUSER_SNAME()`,
     report.check('perms.db-ddladmin-denied', identity.is_ddladmin === 0, {
       expected: 0,
       actual: identity.is_ddladmin,
+    });
+    // EXECUTE is granted to this login at server scope (write-refusal.md records `EXEC sp_who`
+    // succeeding), so asserting it denied would be false. The guard is what refuses EXEC, and the
+    // drive proves that refusal; record the measured value so a change in it is visible.
+    report.note('perms.execute-measured', {
+      databaseScope: identity.can_execute,
+      reason: 'EXECUTE is granted at server scope on this instance, so the guard is the enforcement point',
     });
 
     // 4. Object-level permission on the exact table the read journey uses.

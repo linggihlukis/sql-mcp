@@ -800,6 +800,27 @@ async function main() {
         typeof readAValue?.truncated === 'boolean',
       { rows: readAValue?.rows?.length, truncated: readAValue?.truncated },
     );
+
+    // The cap, exercised where it bites. The statement returns 1000 rows and the caller asks for 5,
+    // so the boundary is a real cut: five rows kept, `truncated` true and exact. The dialect streams,
+    // so the other 995 rows are counted and dropped instead of being held.
+    const cappedRead = await callA('execute_sql', {
+      connection: CONNECTION_NAME,
+      row_limit: 5,
+      sql: `SELECT TOP (1000) * FROM dbo.${PREVIEW_CUT_TABLE}`,
+    });
+    report.check(
+      'read.capped-by-row-limit',
+      cappedRead.value?.row_count === 5 &&
+        cappedRead.value?.rows?.length === 5 &&
+        cappedRead.value?.truncated === true,
+      {
+        row_count: cappedRead.value?.row_count,
+        rows: cappedRead.value?.rows?.length,
+        truncated: cappedRead.value?.truncated,
+        error: cappedRead.isError ? cappedRead.text : undefined,
+      },
+    );
     report.check(
       'read.catalog-agrees-with-returned-columns',
       JSON.stringify(before.columns.rows.map((row) => row[1])) === JSON.stringify(directColumnNames),
@@ -899,10 +920,14 @@ async function main() {
     // (meaning the configured one) or name Uranus explicitly.
     const scope = auditCallScope(runDir, redact);
     results.databaseScope = scope;
-    report.check('safety.single-database', scope.violations.length === 0, {
+    report.check('safety.arguments-name-one-database', scope.violations.length === 0, {
       callsAudited: scope.callsAudited,
       databasesNamed: scope.databasesNamed,
       violations: scope.violations,
+    });
+    report.note('safety.sql-text-not-parsed', {
+      reason:
+        'the audit reads the connection and database arguments each call sent; a three-part name inside the SQL text is permitted by the database argument contract, so the text is not parsed',
     });
     // The audit must have seen both sessions, or it is not covering the whole drive.
     report.check('safety.scope-audit-covers-both-sessions', scope.sessions.length === 2, {

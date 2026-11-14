@@ -189,7 +189,11 @@ export class DatabaseManager {
     const pool = await this.#poolFor(connection, database);
     let result;
     try {
-      result = await dialect.runQuery(pool, sqlText, { timeout: connection.query_timeout_ms });
+      // The dialect streams and stops storing rows at the cap, so the limit has to reach it.
+      result = await dialect.runQuery(pool, sqlText, {
+        timeout: connection.query_timeout_ms,
+        rowLimit: limit,
+      });
     } catch (error) {
       throw new AppError(`SQL query failed: ${error.message}`, { code: 'QUERY_FAILED', cause: error });
     }

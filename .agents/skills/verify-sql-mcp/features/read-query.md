@@ -62,7 +62,12 @@ Preconditions:
   Enumeration is not access.
 - Database scope cannot be checked through `sys.dm_exec_sessions`: the login has
   `VIEW SERVER STATE = 0` and sees only its own session. Assert scope from the request frames
-  (`safety.single-database` in `drive.json`), not from a DMV.
+  (`safety.arguments-name-one-database` in `drive.json`), not from a DMV. That audit reads the
+  arguments each call sent, so a three-part name inside the SQL text is allowed by the `database`
+  argument contract and is not flagged.
+- The row cap bounds what a caller receives, and the dialect streams so it also bounds memory. A
+  statement with no bound of its own still sends every row from the server, which is counted and
+  not stored, so `truncated` stays exact without the process holding the whole result.
 - The tunnel drops occasionally. `ETIMEOUT` on connect is an environment failure; retry once and
   record it, do not treat it as a product failure.
 - `read-shape` and `read-values` failed once, reproducibly, returning one column named `column_1`
