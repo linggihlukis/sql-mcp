@@ -19,7 +19,7 @@ tables relate. These are the read-only discovery tools an agent uses before writ
 
 - Call the corresponding tool from any MCP client.
 - Every tool except `list_connections` takes `connection`. `list_databases` takes only
-  `connection`; the other six also accept `database` and `schema`, and `schema` defaults to `dbo`.
+  `connection`; the other five also accept `database` and `schema`, and `schema` defaults to `dbo`.
 
 ## Driving it with the MCP client
 
@@ -34,7 +34,9 @@ Preconditions:
   configured connection, not only the selected one, so it is also the one call that reaches `dev`.
   Record the connection names and run it as its own serialized step.
 - **List databases.** Call `list_databases` with `{ connection: "prod" }`. The result has
-  `current: "Uranus"` and a `databases` array containing `Uranus`.
+  `current: "Uranus"` and a `databases` array that lists every database on the server — 16 as of
+  2026-11-14, `Uranus` among them. Read the list from the response rather than from a fixed list:
+  it grows as the server gains databases.
 - **List tables.** Call `list_tables` with `{ connection, schema: "dbo" }`. The result contains an
   entry named `_DIM_BranchGroup` with `type: "table"`.
 - **Describe the table.** Call `describe_table` with
