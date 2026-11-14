@@ -42,6 +42,10 @@ export const READ_SQL =
 export const READ_ROW_LIMIT = 50;
 export const DIRECT_REQUEST_TIMEOUT_MS = 15_000;
 
+// A table that holds more rows than `open_table`'s 100-row preview bound, so a preview of it is cut
+// by the bound rather than by the byte cap. Narrow dimension table: 83k rows, no wide columns.
+export const PREVIEW_CUT_TABLE = 'DIM_BPSKelurahan';
+
 // Negative write probes. Both are structurally writes, both affect zero rows by construction, and
 // the login lacks the permission for both. If the MCP guard were broken, the server would still
 // answer 229 instead of mutating a row.

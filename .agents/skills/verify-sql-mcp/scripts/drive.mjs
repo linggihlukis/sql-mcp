@@ -28,6 +28,7 @@ import {
   EXPECTED_DATABASE,
   EXPECTED_LOGIN,
   FINGERPRINT_SQL,
+  PREVIEW_CUT_TABLE,
   READ_ROW_LIMIT,
   READ_SCHEMA,
   READ_SQL,
@@ -474,6 +475,29 @@ async function main() {
       JSON.stringify(sortedById(preview?.rows)) === JSON.stringify(sortedById(directRows)),
       { preview: preview?.rows, direct: directRows },
     );
+
+    // The bound, not the byte cap, is what cuts a preview of a large table. `clampResult` reports
+    // `truncated: false` there (the row count it compares is the post-LIMIT count), and the handler
+    // drops the key; only the byte cap can make it true. A verifier reading "truncated when the
+    // preview was cut" would assert the opposite, so pin the observable.
+    const cutOpen = await callA('open_table', {
+      connection: CONNECTION_NAME,
+      schema: READ_SCHEMA,
+      table: PREVIEW_CUT_TABLE,
+    });
+    const cutPreview = cutOpen.value?.preview;
+    if (cutPreview?.row_count === 100) {
+      report.check('open.preview-row-cut-not-truncated', cutPreview.truncated !== true, {
+        row_count: cutPreview.row_count,
+        truncated: cutPreview.truncated ?? 'absent',
+      });
+    } else {
+      report.note('open.preview-row-cut-skipped', {
+        reason: `${PREVIEW_CUT_TABLE} no longer holds more than the 100-row preview bound`,
+        row_count: cutPreview?.row_count ?? null,
+        error: cutOpen.isError ? cutOpen.text : undefined,
+      });
+    }
 
     const missingTable = await callA('open_table', {
       connection: CONNECTION_NAME,

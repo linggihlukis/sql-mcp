@@ -131,7 +131,8 @@ node .agents/skills/verify-sql-mcp/scripts/drive.mjs --run <run dir printed by d
    the direct read. `list_connections` opens a `master` pool for every configured connection, so it
    is the one call that also reaches `dev`.
 7. **`open_table`.** A valid preview (bounded, identity echoed, note present, rows equal to the
-   direct read), a missing table (`Invalid object name`), and an unsafe name (rejected before SQL).
+   direct read), a preview cut by the 100-row bound on a large table (reports no truncation), a
+   missing table (`Invalid object name`), and an unsafe name (rejected before SQL).
 8. **The local workspace.** Folder/query/tab create, list, get, update, rename, close, delete;
    `execute: true` runs through the same guard; a rejected execute still persists the tab; and a
    second process reads the saved query back, proving persistence across a restart.

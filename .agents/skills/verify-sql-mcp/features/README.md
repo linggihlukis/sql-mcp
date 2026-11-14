@@ -25,6 +25,10 @@ are 12 tools; the map groups them by what a user is trying to accomplish.
   without it. Pass the run directory it prints to `drive.mjs` and `cleanup.mjs` as `--run <dir>`;
   do not rely on "newest run" discovery, which cannot span a sandboxed and an escalated process.
 - Drives are serialized. One production login, one drive at a time.
+- The MySQL half (`mysql-doctor.mjs`, `mysql-drive.mjs`) is `verified-unreachable` on this machine
+  as of 2026-11-14: nothing listens on `127.0.0.1:3306` and `config.json` declares no `mysql`
+  connection. Start Laragon and add that connection to cover it; the recipes in this map describe
+  the SQL Server path.
 
 ## Driving conventions
 

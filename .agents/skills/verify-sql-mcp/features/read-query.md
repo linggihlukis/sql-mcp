@@ -53,10 +53,11 @@ Preconditions:
   `normalizeResult`; keep the assertion, because it is the only thing that catches a regression.
 - The metadata container differs by mode: object mode keys columns by name, while `arrayRowMode`
   gives an array of per-recordset arrays. The type is read from `type.declaration` on each
-  descriptor; `createColumns` sets it in both modes.
-- The production login can read `Athena`, `Gaia`, `Plutus`, `Selene`, `master`, `msdb`, `tempdb`
-  and `Uranus`. Reading the wrong one is a scope violation even though it succeeds; assert the
-  database.
+  descriptor; `columnDescriptors` in the dialect's `runQuery` sets it in both modes.
+- The production login can open 14 of the 16 databases `list_databases` returns, `Uranus` among
+  them, and holds write permission on none of them. Read the list from the tool rather than from a
+  fixed list here; it grows as the server gains databases. Reading any database but `Uranus` is a
+  scope violation even though it succeeds; assert the database.
 - `list_databases` enumerates every database on the server, including ones the login cannot open.
   Enumeration is not access.
 - Database scope cannot be checked through `sys.dm_exec_sessions`: the login has
