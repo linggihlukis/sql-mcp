@@ -7,6 +7,7 @@
 //
 // Usage: node scripts/check-result-caps.mjs
 
+import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -55,6 +56,54 @@ function catalogRows() {
 
 function fakeDatabase() {
   const rows = catalogRows();
+  const names = Object.keys(rows[0]);
+  const descriptors = names.map((name) => ({ name, nullable: true, type: { declaration: 'nvarchar' } }));
+  const descriptorMap = Object.fromEntries(descriptors.map((descriptor) => [descriptor.name, descriptor]));
+  const databaseNames = ['master', 'model', 'msdb', 'tempdb', 'Uranus'];
+  const databaseDescriptors = [{ name: 'name', nullable: false, type: { declaration: 'nvarchar' } }];
+  const databaseDescriptorMap = Object.fromEntries(databaseDescriptors.map((descriptor) => [descriptor.name, descriptor]));
+
+  class FakeRequest extends EventEmitter {
+    constructor() {
+      super();
+      this.stream = false;
+      this.arrayRowMode = false;
+      this.inputs = {};
+    }
+
+    input(name, value) {
+      this.inputs[name] = value;
+    }
+
+    query(text) {
+      // list_connections and list_databases read sys.databases; keep that realistic, or the pin
+      // measures a payload no real server produces.
+      const isDatabases = /sys\.databases/i.test(text);
+      const selected = isDatabases
+        ? databaseNames.map((name) => ({ name }))
+        : this.inputs.table
+          ? rows.filter((row) => row.object_name === this.inputs.table)
+          : rows;
+      const top = /TOP\s*\(\s*(\d+)\s*\)/i.exec(text);
+      const kept = top ? selected.slice(0, Number(top[1])) : selected;
+      const columns = isDatabases ? databaseDescriptors : descriptors;
+
+      if (this.stream) {
+        this.emit('recordset', isDatabases ? databaseDescriptorMap : descriptorMap);
+        for (const row of kept) this.emit('row', row);
+        this.emit('done', { output: {}, rowsAffected: kept.length });
+        return undefined;
+      }
+
+      const recordset = this.arrayRowMode
+        ? kept.map((row) => columns.map((column) => row[column.name]))
+        : kept;
+      const result = { recordsets: [recordset], recordset, output: {}, rowsAffected: kept.length };
+      if (this.arrayRowMode) result.columns = [columns];
+      return Promise.resolve(result);
+    }
+  }
+
   class FakePool {
     constructor(config) {
       this.config = config;
@@ -66,34 +115,7 @@ function fakeDatabase() {
     }
 
     request() {
-      const inputs = {};
-      const request = {
-        arrayRowMode: false,
-        input(name, value) {
-          inputs[name] = value;
-        },
-        query: async (text) => {
-          // list_connections and list_databases read sys.databases; keep that realistic, or the pin
-          // measures a payload no real server produces.
-          if (/sys\.databases/i.test(text)) {
-            const names = ['master', 'model', 'msdb', 'tempdb', 'Uranus'].map((name) => ({ name }));
-            return request.arrayRowMode
-              ? { columns: [[{ name: 'name', nullable: false, type: { declaration: 'nvarchar' } }]], recordset: names.map((row) => [row.name]) }
-              : { columns: [[{ name: 'name', nullable: false, type: { declaration: 'nvarchar' } }]], recordset: names };
-          }
-          const selected = inputs.table
-            ? rows.filter((row) => row.object_name === inputs.table)
-            : rows;
-          const names = Object.keys(rows[0]);
-          const columns = [names.map((name) => ({ name, nullable: true, type: { declaration: 'nvarchar' } }))];
-          // The catalog tools read named properties; execute_sql reads positional arrays. Honour
-          // whichever mode the caller asked for, or the pin measures a shape nothing produces.
-          return request.arrayRowMode
-            ? { columns, recordset: selected.map((row) => names.map((name) => row[name])) }
-            : { columns, recordset: selected };
-        },
-      };
-      return request;
+      return new FakeRequest();
     }
 
     async close() {}
