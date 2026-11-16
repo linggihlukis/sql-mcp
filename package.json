@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "Stdio MCP server providing DB Atelier-compatible tools for SQL Server and MySQL.",
+  "license": "MIT",
   "type": "module",
   "bin": {
     "sql-mcp": "src/index.js"
