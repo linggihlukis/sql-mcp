@@ -585,5 +585,4 @@ agent changing the code.
 
 ## License
 
-MIT. No `LICENSE` file is committed yet, so add one before you rely on this in a project that needs
-a license file on disk.
+MIT. See [LICENSE](LICENSE).
