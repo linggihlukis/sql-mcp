@@ -121,7 +121,17 @@ async function main() {
   const runDir = resolveRunDir(args.run);
   const report = createReport();
 
-  const connection = resolveMysqlConnection();
+  // A missing or non-MySQL connection is a blocked precondition, not a crash. Exit 2 with a named
+  // reason so the caller reports `blocked` instead of reading a stack trace as a product failure.
+  let connection;
+  try {
+    connection = resolveMysqlConnection();
+  } catch (error) {
+    process.stdout.write(`BLOCKED  preconditions.connection ${error.message}\n`);
+    process.stdout.write('\nBLOCKED: no MySQL connection to drive.\n');
+    process.exitCode = 2;
+    return;
+  }
   const redact = makeRedactor([connection.password]);
   const results = { runDir, startedAt: new Date().toISOString(), db_type: 'mysql' };
   const sessions = [];

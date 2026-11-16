@@ -77,8 +77,24 @@ function countingDialect() {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+
+  // Resolve the connection before creating a run directory. A missing or non-MySQL connection is a
+  // blocked precondition, not a crash: it must exit 2 with a named reason and leave no empty run
+  // directory behind for a later drive to mistake for a real one.
+  let connection;
+  try {
+    connection = resolveMysqlConnection();
+  } catch (error) {
+    process.stdout.write(`BLOCKED  config.connection ${error.message}\n`);
+    process.stdout.write(
+      '\nBLOCKED: no MySQL connection to verify. Add one to config.json, or set ' +
+        'SQL_MCP_VERIFY_MYSQL_CONNECTION to the name of an existing MySQL connection.\n',
+    );
+    process.exitCode = 2;
+    return;
+  }
+
   const runDir = args.run ? resolveRunDir(args.run) : createRunDir();
-  const connection = resolveMysqlConnection();
   const redact = makeRedactor([connection.password]);
   const report = createReport();
 

@@ -26,9 +26,10 @@ are 12 tools; the map groups them by what a user is trying to accomplish.
   do not rely on "newest run" discovery, which cannot span a sandboxed and an escalated process.
 - Drives are serialized. One production login, one drive at a time.
 - The MySQL half (`mysql-doctor.mjs`, `mysql-drive.mjs`) is `verified-unreachable` on this machine
-  as of 2026-11-14: nothing listens on `127.0.0.1:3306` and `config.json` declares no `mysql`
-  connection. Start Laragon and add that connection to cover it; the recipes in this map describe
-  the SQL Server path.
+  as of 2026-11-16: nothing listens on `127.0.0.1:3306` and `config.json` declares no `mysql`
+  connection. Both helpers exit `2` with a named reason in that state, so a run reports `blocked`
+  rather than a crash. Start Laragon and add that connection to cover it; the recipes in this map
+  describe the SQL Server path.
 
 ## Driving conventions
 

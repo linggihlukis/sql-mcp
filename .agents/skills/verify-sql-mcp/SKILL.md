@@ -90,12 +90,13 @@ It asserts, in one run:
 | `live.database` | exactly `Uranus` |
 | `live.server` | `SQL_MCP_VERIFY_SERVER` |
 | `perms.select-granted` | `HAS_PERMS_BY_NAME(...,'DATABASE','SELECT') = 1` |
-| `perms.can_insert-denied` … `perms.can_control-denied` | `INSERT`, `UPDATE`, `DELETE`, `ALTER`, `CREATE TABLE`, `CONTROL` all `= 0` |
-| `perms.can_create_any_database-denied`, `perms.can_control_server-denied` | `= 0` |
+| `perms.can_insert-denied` … `perms.can_take_ownership-denied` | `INSERT`, `UPDATE`, `DELETE`, `ALTER`, `CREATE TABLE`, `CONTROL`, `REFERENCES`, `TAKE OWNERSHIP` all `= 0` |
+| `perms.can_create_any_database-denied`, `perms.can_control_server-denied`, `perms.can_alter_any_database-denied` | `= 0` |
 | `perms.sysadmin/dbcreator/db-owner/datawriter/ddladmin-denied` | all `= 0` |
+| `perms.execute-measured` | INFO only: `EXECUTE` is granted at server scope here, so the guard is the enforcement point and the value is recorded, not asserted |
 | `object.*` | the same matrix on `dbo._DIM_BranchGroup` specifically |
 | `cross-database.any_*-denied` | no other database grants a write bit (judged from `Uranus`; no second database is opened) |
-| `production.no-open-write-transaction` | no session of this login holds an open transaction |
+| `production.dmv-sees-only-this-session` | exactly one session is visible, which is the limitation the old open-transaction check depended on |
 | `config.*` | selected connection exists, expected login/server present in the environment, expected login/database, `read_only: true`, secrets from env, every configured connection name recorded, config hashes recorded |
 
 **If any write bit is granted, stop and report blocked.** Do not drive. The doctor exits `2` and
@@ -125,7 +126,9 @@ node .agents/skills/verify-sql-mcp/scripts/drive.mjs --run <run dir printed by d
    Two further guard properties are proven live, and both probes are all reads so a broken guard
    returns rows rather than mutating anything: a second statement is refused even when both are
    reads (`guard.multi-statement-refused`), and a `--` inside a quoted identifier cannot hide one
-   (`guard.identifier-cannot-hide-a-statement`).
+   (`guard.identifier-cannot-hide-a-statement`). A third probe proves a write behind a comment is
+   still refused (`guard.comment-cannot-hide-a-statement`); it is a write by construction and
+   touches zero rows, so a broken guard yields a permission error rather than a mutation.
 4. **Nothing mutated.** A row count plus `CHECKSUM_AGG(BINARY_CHECKSUM(...))` fingerprint is taken
    before and after and must match.
 5. **One database only.** Every `tools/call` frame the drive recorded is audited: each must name
@@ -297,8 +300,8 @@ the MCP SDK from the repo's `node_modules`, so no install step is needed.
 | `node .agents/skills/verify-sql-mcp/scripts/doctor.mjs` | Prove read-only; writes `proof.json`; exit `2` = blocked |
 | `node .agents/skills/verify-sql-mcp/scripts/drive.mjs --run <dir>` | One serialized drive; writes `drive.json` |
 | `node .agents/skills/verify-sql-mcp/scripts/cleanup.mjs --run <dir>` | Stop this run's processes, remove scratch, keep evidence |
-| `node .agents/skills/verify-sql-mcp/scripts/mysql-doctor.mjs` | Prove the MySQL guard and capture the baseline; writes `mysql-doctor.json`; exit `2` = blocked |
-| `node .agents/skills/verify-sql-mcp/scripts/mysql-drive.mjs --run <dir>` | One serialized MySQL drive; writes `mysql-drive.json` |
+| `node .agents/skills/verify-sql-mcp/scripts/mysql-doctor.mjs` | Prove the MySQL guard and capture the baseline; writes `mysql-doctor.json`; exit `2` = blocked (no MySQL connection, or a guard probe not refused) |
+| `node .agents/skills/verify-sql-mcp/scripts/mysql-drive.mjs --run <dir>` | One serialized MySQL drive; writes `mysql-drive.json`; exit `2` = blocked (no MySQL connection, or the doctor did not pass) |
 
 Set `SQL_MCP_VERIFY_LOGIN` and `SQL_MCP_VERIFY_SERVER` in `.env` (or the environment) to the
 read-only login and production host the doctor must see. They are not committed; with either unset,
