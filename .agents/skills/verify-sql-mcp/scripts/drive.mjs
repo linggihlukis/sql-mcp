@@ -855,6 +855,19 @@ async function main() {
       { isError: bracketProbe.isError, text: bracketProbe.text.slice(0, 200) },
     );
 
+    // A write behind a comment. The statement is a write by construction and touches zero rows, so
+    // a guard that stripped the comment and then let it through would still be denied by the login.
+    const commentProbe = await callA('execute_sql', {
+      connection: CONNECTION_NAME,
+      row_limit: 5,
+      sql: '/* verify-probe */ DELETE FROM dbo._DIM_BranchGroup WHERE 1 = 0',
+    });
+    report.check(
+      'guard.comment-cannot-hide-a-statement',
+      commentProbe.isError === true && /Read-only connections/.test(commentProbe.text),
+      { isError: commentProbe.isError, text: commentProbe.text.slice(0, 200) },
+    );
+
     // ---------------------------------------------------------------- write refusal, part 1
     // The MCP guard under test. Safe even if the guard is broken: the verification login lacks the permission.
     results.writeRefusal = { mcpGuard: [], serverDenial: [] };

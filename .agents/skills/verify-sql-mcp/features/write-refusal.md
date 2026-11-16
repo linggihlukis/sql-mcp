@@ -16,7 +16,10 @@ guarantee that makes it safe to point an agent at production at all.
 - `write-no-mutation` leaves the row count and row fingerprint unchanged.
 - `write-no-dedicated-tool` records that no dedicated write tool exists; `execute_sql` is the direct
   route and `manage_query_tab` with `execute: true` is the second, also guarded route.
-- `write-no-transaction` never opens a transaction as a safety net.
+- `write-no-transaction` never opens a transaction as a safety net. This is a property of the
+  helpers, not a live check: no helper issues `BEGIN TRAN`, and the drive's own header states the
+  rule. There is no check ID for it, because a check that asserts the absence of a statement the
+  harness never sends would pass regardless of the product.
 
 ## How to get to it (user POV)
 
@@ -51,6 +54,11 @@ Preconditions:
   second statement must still be seen and refused, with the same text. Before 2026-11-14 the
   scanner read `--` inside `[...]` as a comment and lost the second statement; this probe fails on
   that version.
+- **A comment cannot hide a write.** Call `execute_sql` with
+  `/* verify-probe */ DELETE FROM dbo._DIM_BranchGroup WHERE 1 = 0`. The response has
+  `isError: true` and the text contains `Read-only connections reject "DELETE" statements.` The
+  statement is a write by construction and touches zero rows, so a guard that let it through would
+  still be denied by the login.
 - **Server denies it independently.** With no MCP in the path, send the same two statements over a
   direct `mssql` connection. Both must fail with error number `229`
   (`The INSERT/UPDATE permission was denied on the object ...`). This proves the guarantee comes
@@ -59,8 +67,8 @@ Preconditions:
   before and after. They must be identical.
 - **Proof.** Keep `drive.json` (`write.guard-rejects-*`, `write.server-denies-*`,
   `write.server-error-229-*`, `guard.multi-statement-refused`,
-  `guard.identifier-cannot-hide-a-statement`, `safety.fingerprint-unchanged`) and the corresponding
-  frames in `frames-A-raw.jsonl`.
+  `guard.identifier-cannot-hide-a-statement`, `guard.comment-cannot-hide-a-statement`,
+  `safety.fingerprint-unchanged`) and the corresponding frames in `frames-A-raw.jsonl`.
 
 ## Gotchas
 
