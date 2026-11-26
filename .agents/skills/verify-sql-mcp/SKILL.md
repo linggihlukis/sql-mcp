@@ -219,6 +219,48 @@ things specific to MySQL:
 The `eosys` schema declares no foreign keys, so `get_erd` returning `total_relationships: 0` is
 recorded as `INFO`, not asserted. A non-zero count there would be a fabricated edge.
 
+### Writable MySQL
+
+`mysql-write-drive.mjs` covers the other half: a connection with `read_only: false`, which is the
+only way `execute_sql` reaches a write. It drives the connection named by
+`SQL_MCP_VERIFY_MYSQL_WRITE_CONNECTION` (default `eosys`).
+
+```powershell
+node .agents/skills/verify-sql-mcp/scripts/mysql-write-drive.mjs
+```
+
+Safety is structural, because this is the one helper that must write:
+
+- It creates exactly one table, `sql_mcp_wp_<time>_<pid>`, and drops it in a `finally` block. It
+  never writes to an existing table; `departments` is read only, for the fingerprint.
+- It hashes `config.json` before and after and fails if the hash moved.
+- The read-only refusal runs in a second server process against a generated clone of the same
+  connection with `read_only: true`. The clone file holds env var names only; the values travel in
+  the child's environment. The real config is never edited.
+- No transaction, no `BEGIN`/`COMMIT`, no `TRUNCATE`, no write outside the scratch table.
+
+What it proves, in one serialized run:
+
+| Check | Requirement |
+| --- | --- |
+| `write.create-header` | `CREATE TABLE` returns `affected_rows: 0` and no error |
+| `write.insert-affected-rows`, `write.update-affected-rows` | `affected_rows` and `info` match the driver, and a direct witness sees the rows |
+| `write.noop-update-zero` | a zero-row `UPDATE` reports `affected_rows: 0` instead of dropping the field |
+| `write.tab-execute-result`, `write.tab-witness` | `manage_query_tab` with `execute: true` returns the execution result and the delete landed |
+| `write.read-shape-unchanged` | a read still returns `columns`/`rows` and no write fields |
+| `read-only.refusal`, `read-only.witness-unchanged` | the read-only clone refuses `INSERT` and the row is absent |
+| `safety.fingerprint-unchanged` | the `departments` fingerprint is identical before and after |
+| `config.unchanged` | the real config hash is identical before and after |
+
+`affected_rows` is MySQL's matched-row count. DDL and `TRUNCATE` report `0` because the protocol
+does. A `CALL` with several result sets returns the last set that carries rows plus the trailing
+header's count; that translation lives in `src/dialects/mysql.js`, not in the tools.
+
+**Session continuity is not a capability.** Sequential calls reuse one pooled connection in
+practice, so a `TEMPORARY` table or a transaction can appear to persist. Two calls in flight take
+different pool connections and the session state disappears (`Table ... doesn't exist`). Do not
+build a drive that depends on session state, and do not document transactions as supported.
+
 ## Evidence
 
 Evidence goes outside the repository, because JSON-RPC frames contain production rows. The root is
@@ -269,10 +311,11 @@ killed by process name. If a pid is still alive and its start time cannot be rea
 Cleanup never deletes evidence. `cleanup.json` lists the artifacts it kept. Run cleanup after every
 failed iteration too, so a broken attempt does not strand a process.
 
-## A stand-in for the write path does not exist on this machine
+## A stand-in for the SQL Server write path does not exist on this machine
 
-The write path cannot be exercised as a *success* here: production denies writes, and no disposable
-database exists. A local stand-in was attempted and is **not reachable**:
+The writable MySQL path does have a stand-in: the local Laragon server, driven by
+`mysql-write-drive.mjs`. The SQL Server write path does not. Production denies writes, and no
+disposable SQL Server database exists. A local stand-in was attempted and is **not reachable**:
 
 - Docker Desktop is installed and its engine answers (`29.8.1`), but the VM has ~940 MB of memory
   (`~/.wslconfig` sets `memory=1073741824`).
@@ -302,6 +345,7 @@ the MCP SDK from the repo's `node_modules`, so no install step is needed.
 | `node .agents/skills/verify-sql-mcp/scripts/cleanup.mjs --run <dir>` | Stop this run's processes, remove scratch, keep evidence |
 | `node .agents/skills/verify-sql-mcp/scripts/mysql-doctor.mjs` | Prove the MySQL guard and capture the baseline; writes `mysql-doctor.json`; exit `2` = blocked (no MySQL connection, or a guard probe not refused) |
 | `node .agents/skills/verify-sql-mcp/scripts/mysql-drive.mjs --run <dir>` | One serialized MySQL drive; writes `mysql-drive.json`; exit `2` = blocked (no MySQL connection, or the doctor did not pass) |
+| `node .agents/skills/verify-sql-mcp/scripts/mysql-write-drive.mjs [--run <dir>]` | One serialized writable-MySQL drive against a scratch table; writes `mysql-write-drive.json`; exit `2` = blocked (no writable connection) |
 
 Set `SQL_MCP_VERIFY_LOGIN` and `SQL_MCP_VERIFY_SERVER` in `.env` (or the environment) to the
 read-only login and production host the doctor must see. They are not committed; with either unset,
@@ -337,6 +381,15 @@ treated `result.columns` as the column array itself, so it read `columns[0].name
 and fell back to `column_1`. Rows were then built by mapping over that single entry. The fix
 flattens one level in `columnDescriptors`, and `test/database.test.js` now asserts the shape `mssql`
 actually returns rather than a flat array it never returns. The drive is green as of that fix.
+
+**Fixed, 2026-11-26.** A writable MySQL connection returned every DML and DDL statement as
+`{"columns":[],"row_count":0,"rows":[],"truncated":false}`, so an `INSERT` of two rows and an
+`UPDATE` that matched nothing looked identical. `src/dialects/mysql.js` discarded the driver's
+`ResultSetHeader`. The fix maps `affectedRows`, `insertId`, and `info` into `affected_rows`,
+`insert_id`, and `info` through the existing envelope, and returns the last row set for a multi-set
+`CALL`. `manage_query_tab` with `execute: true` now returns the result it used to discard, and
+`list_connections` reports `read_only`. `mysql-write-drive.mjs` proves the path against a scratch
+table and a direct witness.
 
 **Reported, 2026-10-28 (product gap, not fixed here).** `open_table` builds its preview flag as
 `result.truncated || marker.truncated`. When the preview is complete both sides are falsy, so the

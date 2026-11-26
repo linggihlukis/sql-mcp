@@ -121,11 +121,73 @@ function columnDescriptors(fields) {
   }));
 }
 
+// mysql2 answers in one of three shapes, and the tools must see one shape for a read and one for a
+// write:
+//   row array + field array         -> a result set
+//   ResultSetHeader + no fields     -> a write (DML/DDL) or any statement with no result set
+//   array of sets + array of fields -> several result sets, which only CALL produces
+// The dialect owns that translation; src/tools/ never learns a driver shape.
+function isResultSetHeader(value) {
+  return Boolean(value)
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && typeof value.affectedRows === 'number'
+    && typeof value.fieldCount === 'number';
+}
+
+function writeMetadata(header) {
+  return {
+    affected_rows: header.affectedRows,
+    insert_id: header.insertId,
+    info: typeof header.info === 'string' ? header.info : '',
+  };
+}
+
+function readResult(rows, fields) {
+  return { columns: columnDescriptors(fields), rows, totalRows: rows.length };
+}
+
+function writeResult(header) {
+  return { columns: [], rows: [], totalRows: 0, write: writeMetadata(header) };
+}
+
+function isMultiResultSet(rows, fields) {
+  return Array.isArray(rows)
+    && (rows.some(isResultSetHeader)
+      || (Array.isArray(fields) && fields.some((entry) => Array.isArray(entry))));
+}
+
+// A stored procedure returns one entry per result set: a row array for a SELECT, a header for a
+// statement with no rows. The last set that carries rows is the answer, and the last header, which
+// CALL appends, supplies the affected-row count. Returning every set would add a second result
+// contract to every tool, and returning the literal last entry would discard the rows whenever the
+// procedure ends with its status packet.
+function multiResult(rows, fields) {
+  let selected = null;
+  let header = null;
+  rows.forEach((entry, index) => {
+    if (isResultSetHeader(entry)) {
+      header = entry;
+      return;
+    }
+    if (Array.isArray(entry)) {
+      selected = { rows: entry, fields: Array.isArray(fields?.[index]) ? fields[index] : [] };
+    }
+  });
+  if (selected) {
+    return {
+      ...readResult(selected.rows, selected.fields),
+      ...(header ? { write: writeMetadata(header) } : {}),
+    };
+  }
+  return header ? writeResult(header) : readResult([], []);
+}
+
 async function runQuery(pool, sqlText, { timeout } = {}) {
   const [rows, fields] = await pool.query({ sql: sqlText, rowsAsArray: true, timeout });
-  // A write statement on a writable connection returns a result header, not rows.
-  const resultRows = Array.isArray(rows) ? rows : [];
-  return { columns: columnDescriptors(fields), rows: resultRows, totalRows: resultRows.length };
+  if (isResultSetHeader(rows)) return writeResult(rows);
+  if (isMultiResultSet(rows, fields)) return multiResult(rows, fields);
+  return readResult(Array.isArray(rows) ? rows : [], fields);
 }
 
 async function runPlan(pool, { sql: text, values = [] }) {

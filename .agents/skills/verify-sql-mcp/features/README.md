@@ -25,11 +25,12 @@ are 12 tools; the map groups them by what a user is trying to accomplish.
   without it. Pass the run directory it prints to `drive.mjs` and `cleanup.mjs` as `--run <dir>`;
   do not rely on "newest run" discovery, which cannot span a sandboxed and an escalated process.
 - Drives are serialized. One production login, one drive at a time.
-- The MySQL half (`mysql-doctor.mjs`, `mysql-drive.mjs`) is `verified-unreachable` on this machine
-  as of 2026-11-16: nothing listens on `127.0.0.1:3306` and `config.json` declares no `mysql`
-  connection. Both helpers exit `2` with a named reason in that state, so a run reports `blocked`
-  rather than a crash. Start Laragon and add that connection to cover it; the recipes in this map
-  describe the SQL Server path.
+- The MySQL half is reachable on this machine as of 2026-11-26: Laragon listens on
+  `127.0.0.1:3306` and `config.json` declares `eosys` with `read_only: false`.
+  `mysql-doctor.mjs` and `mysql-drive.mjs` still require a read-only MySQL connection named `mysql`
+  (or named by `SQL_MCP_VERIFY_MYSQL_CONNECTION`), so they exit `2` until one is configured.
+  `mysql-write-drive.mjs` drives `eosys` and is the writable path. The SQL Server recipes below
+  remain the production path.
 
 ## Driving conventions
 
@@ -77,9 +78,13 @@ then uses exactly four H2 sections in this order.
 - [Persisted query workspace](query-workspace.md) covers `manage_saved_queries`,
   `manage_query_folders`, and `manage_query_tab`, which write local state; `manage_query_tab` with
   `execute: true` also runs a guarded read.
+- [Write path on a writable MySQL connection](write-path.md) covers the result shape of DML and DDL
+  on `read_only: false`, the `manage_query_tab` execution result, and the read-only refusal.
 
 ## Not covered by a stand-in
 
-The write path is only verifiable as *refused*, because production denies writes and no disposable
-database exists (`dbcreator = 0`, `CREATE ANY DATABASE = 0`). No local stand-in is reachable on this
-machine; see the SKILL.md section "A stand-in for the write path does not exist on this machine".
+The SQL Server write path is only verifiable as *refused*, because production denies writes and no
+disposable database exists (`dbcreator = 0`, `CREATE ANY DATABASE = 0`). No local SQL Server
+stand-in is reachable on this machine; see the SKILL.md section "A stand-in for the SQL Server write
+path does not exist on this machine". The writable MySQL path is covered by `mysql-write-drive.mjs`
+against the local Laragon server.

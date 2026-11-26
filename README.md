@@ -124,8 +124,9 @@ directory, and a client usually launches it from somewhere else.
 On Windows, write the paths with forward slashes, as in `C:/path/to/sql-mcp/src/index.js`.
 
 Restart the MCP server in your client, then call `list_connections`. A working setup returns one
-entry per configured connection with the databases each one can see. That call opens a pool for
-every connection, so it also proves the credentials work.
+entry per configured connection with the databases each one can see and a `read_only` flag, so a
+client can tell which connections accept writes. That call opens a pool for every connection, so it
+also proves the credentials work.
 
 A server that starts cleanly has not proven anything yet. The server connects lazily and does not
 touch the database until the first database tool runs.
@@ -331,11 +332,11 @@ The server provides twelve tools.
 
 | Tool | Purpose |
 | --- | --- |
-| `list_connections` | List configured connections with the databases each one can see. |
+| `list_connections` | List configured connections with their databases and `read_only` flag. |
 | `list_databases` | List every database on a connection. |
 | `list_tables` | List tables and views in a schema. |
 | `describe_table` | Column names, types, nullability, keys, and defaults. |
-| `execute_sql` | Run a SQL query and return bounded rows. |
+| `execute_sql` | Run a SQL statement; reads return bounded rows, writes return affected rows. |
 | `search_columns` | Find columns by name substring across a schema. |
 | `get_schema_summary` | Every table in a schema with its column count. |
 | `get_erd` | Tables, columns, and foreign-key relationships. |
@@ -387,8 +388,20 @@ the data instead.
 `execute_sql` takes `sql` and an optional `row_limit`. The limit is clamped to the connection's
 `max_row_limit`, and a call that omits it gets `max_row_limit` rows.
 
-The result has `columns`, `row_count`, `rows`, and `truncated`. Rows are arrays of values in column
-order, not objects. `truncated` is `true` when the server sent more rows than the result holds.
+A read result has `columns`, `row_count`, `rows`, and `truncated`. Rows are arrays of values in
+column order, not objects. `truncated` is `true` when the server sent more rows than the result
+holds.
+
+On a connection with `read_only: false`, a write returns the same envelope with empty `columns`,
+`rows`, and `row_count: 0`, plus three fields from the driver. `affected_rows` is the number of rows
+the statement matched or changed, and is `0` for DDL and `TRUNCATE`. `insert_id` is the first
+auto-increment value the statement generated, or `0`. `info` carries the driver's note, such as
+`Records: 2  Duplicates: 0  Warnings: 0`, and is omitted when empty. A zero-row write reports
+`affected_rows: 0`; it is not an error.
+
+A stored procedure called with `CALL` can return several result sets. The server returns the last
+set that carries rows, plus the affected-row count from the trailing status packet. It does not
+return every set.
 
 ### Workspace tools
 
@@ -408,7 +421,8 @@ it.
 `manage_query_tab` takes `action`, one of `create`, `open`, `update`, or `close`. `create` needs
 `connection` and takes `title`, `sql`, `folderId`, and `execute`. It also saves the SQL as a query,
 and the tab and the query share one id. `open` needs `queryId` or `tabId`. `update` and `close` need
-`tabId`.
+`tabId`. When `execute: true`, the response also carries the statement's result under `result`, in
+the same shape `execute_sql` returns, so an affected-row count is not lost.
 
 ## Read-only connections
 
@@ -442,7 +456,12 @@ The guard is a safety net, not the only one. The stronger configuration is a log
 at all.
 
 - **A writable connection has no guard.** With `read_only: false`, the server passes the statement
-  to the driver unchanged. Permissions are the only limit.
+  to the driver unchanged, including DDL and `CALL`. Permissions are the only limit, and
+  `multipleStatements` stays off, so one call is still one statement.
+- **Session state does not survive across overlapping calls.** Each call takes a pooled connection.
+  Sequential calls usually reuse one, but two calls in flight take different connections, so a
+  transaction, a `TEMPORARY` table, or a session variable started in one call may not exist in the
+  next. Do not build a multi-call transaction on this server.
 - **The guard reads text, not intent.** It rejects a statement it cannot prove is a read. A read
   written in a form the lexer does not recognize is refused, and the error names the word that
   caused it.

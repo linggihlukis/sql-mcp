@@ -13,6 +13,26 @@ function scopedArgs(database, args) {
   return { ...args, database: database.defaultDatabase(args.connection) };
 }
 
+// execute: true used to run the statement and discard its result, so a caller could not tell one
+// affected row from a no-op. The result now rides under `result`, with its rows truncated the same
+// way open_table does, so the tab identity is never the part the cap removes.
+function tabResult(database, connection, payload, result) {
+  if (!result) return toolResult(payload);
+  return listResult({
+    list: result.rows,
+    maxBytes: maxBytesFor(database, connection),
+    build: (kept, marker) => ({
+      ...payload,
+      result: {
+        ...result,
+        row_count: kept.length,
+        rows: kept,
+        truncated: result.truncated || marker.truncated,
+      },
+    }),
+  });
+}
+
 export function createWorkspaceTools({ database, workspace }) {
   return {
     manage_saved_queries: async (args) => {
@@ -82,10 +102,15 @@ export function createWorkspaceTools({ database, workspace }) {
       switch (args.action) {
         case 'create': {
           const tab = workspace.createTab(scopedArgs(database, args));
-          if (args.execute) {
-            await database.query(tab.connection, tab.sql, { database: tab.database });
-          }
-          return toolResult({ status: 'created', tabId: tab.id, title: tab.title });
+          const result = args.execute
+            ? await database.query(tab.connection, tab.sql, { database: tab.database })
+            : null;
+          return tabResult(
+            database,
+            tab.connection,
+            { status: 'created', tabId: tab.id, title: tab.title },
+            result,
+          );
         }
         case 'open': {
           const tab = workspace.openTab(args.tabId, args.queryId);
@@ -93,10 +118,10 @@ export function createWorkspaceTools({ database, workspace }) {
         }
         case 'update': {
           const tab = workspace.updateTab(args);
-          if (args.execute) {
-            await database.query(tab.connection, tab.sql, { database: tab.database });
-          }
-          return toolResult({ status: 'updated', tabId: tab.id });
+          const result = args.execute
+            ? await database.query(tab.connection, tab.sql, { database: tab.database })
+            : null;
+          return tabResult(database, tab.connection, { status: 'updated', tabId: tab.id }, result);
         }
         case 'close':
           return toolResult({ status: 'closed', tabId: workspace.closeTab(args.tabId).tabId });
