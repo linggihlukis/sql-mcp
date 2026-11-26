@@ -309,10 +309,12 @@ ORDER BY c.column_id`;
 // ---------------------------------------------------------------------------------------------
 
 export class RawSession {
-  constructor({ label, runDir, redact }) {
+  constructor({ label, runDir, redact, configPath = CONFIG_PATH, extraEnv = {} }) {
     this.label = label;
     this.runDir = runDir;
     this.redact = redact;
+    this.configPath = configPath;
+    this.extraEnv = extraEnv;
     this.framesPath = path.join(runDir, `frames-${label}.jsonl`);
     this.stderrPath = path.join(runDir, `stderr-${label}.log`);
     this.stderr = '';
@@ -371,9 +373,10 @@ export class RawSession {
       SystemRoot: process.env.SystemRoot,
       TEMP: process.env.TEMP,
       TMP: process.env.TMP,
-      SQL_MCP_CONFIG: CONFIG_PATH,
+      SQL_MCP_CONFIG: this.configPath,
       SQL_MCP_DATA_DIR: path.join(this.runDir, 'mcp-data'),
       SQL_MCP_VERIFY_RUN_ID: path.basename(this.runDir),
+      ...this.extraEnv,
     };
     this.child = spawn(process.execPath, [ENTRY], {
       cwd: REPO,

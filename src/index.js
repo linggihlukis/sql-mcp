@@ -55,7 +55,8 @@ const toolDescriptions = {
   list_databases: 'List all databases available on a connection.',
   list_tables: 'List all tables and views in a schema.',
   describe_table: 'Get detailed column info: names, types, nullability, primary keys, foreign keys, defaults.',
-  execute_sql: 'Execute a SQL query. Returns columns and rows as JSON with a bounded row limit.',
+  execute_sql:
+    'Execute a SQL statement. A read returns columns and rows as JSON with a bounded row limit; a write on a writable connection returns affected_rows, insert_id, and info. Read-only connections reject writes before they reach the server.',
   search_columns: 'Search for columns across all tables in a schema by name pattern.',
   get_schema_summary: 'Get a lightweight overview of all tables and views in a schema.',
   get_erd: 'Get tables, columns, and foreign-key relationships for a schema.',

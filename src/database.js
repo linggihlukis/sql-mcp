@@ -10,6 +10,18 @@ function resultBytes(value) {
   return Buffer.byteLength(JSON.stringify(value, null, 2), 'utf8');
 }
 
+// A write result is dialect-neutral by the time it reaches here: the dialect has already named the
+// driver's fields affected_rows/insert_id/info. `info` is dropped when empty so a DDL result stays
+// as small as the read envelope it replaces.
+function writeFields(write) {
+  if (!write) return {};
+  return {
+    affected_rows: write.affected_rows,
+    insert_id: write.insert_id,
+    ...(write.info ? { info: write.info } : {}),
+  };
+}
+
 /**
  * Caps a result to `rowLimit` rows and `maxBytes` of serialized output.
  *
@@ -17,7 +29,7 @@ function resultBytes(value) {
  * serialized size only grows as rows are added, so the largest fitting prefix is found by binary
  * search rather than by reserialising once per dropped row.
  */
-function clampResult({ columns, rows, totalRows, rowLimit, maxBytes }) {
+function clampResult({ columns, rows, totalRows, rowLimit, maxBytes, write }) {
   const kept = rows.slice(0, rowLimit).map((row) =>
     Array.isArray(row) ? row.slice(0, columns.length) : columns.map(({ name }) => row[name]),
   );
@@ -28,6 +40,7 @@ function clampResult({ columns, rows, totalRows, rowLimit, maxBytes }) {
       row_count: count,
       rows: kept.slice(0, count),
       truncated: totalRows > count || count < kept.length,
+      ...writeFields(write),
     });
     let low = 0;
     let high = kept.length;
@@ -43,6 +56,7 @@ function clampResult({ columns, rows, totalRows, rowLimit, maxBytes }) {
     row_count: kept.length,
     rows: kept,
     truncated: totalRows > kept.length,
+    ...writeFields(write),
   };
 }
 
@@ -127,6 +141,7 @@ export class DatabaseManager {
         name: connection.name,
         db_type: connection.db_type,
         database: connection.database,
+        read_only: connection.read_only,
         available_databases: databases,
       });
     }
@@ -203,6 +218,7 @@ export class DatabaseManager {
       totalRows: result.totalRows,
       rowLimit: limit,
       maxBytes: connection.max_result_bytes,
+      write: result.write,
     });
   }
 

@@ -232,15 +232,113 @@ test('mysql manager — query — applies the row cap to what the caller receive
   assert.equal(result.truncated, true);
 });
 
+test('mysql manager — list_connections details — reports read_only beside the databases', async () => {
+  const database = fakeDatabase({ rows: [{ name: 'eosys' }], readOnly: false });
+  const details = await database.listConnectionDetails();
+  assert.equal(details[0].read_only, false);
+  assert.deepEqual(details[0].available_databases, ['eosys']);
+  await database.close();
+});
+
 test('mysql manager — read-only — refuses a write before the pool opens', async () => {
   const database = fakeDatabase();
   await assert.rejects(() => database.query('laragon', 'DELETE FROM departments'), /Read-only connections/);
   assert.deepEqual(database.calls, []);
 });
 
-test('mysql manager — write on a writable connection — returns no rows instead of crashing', async () => {
-  const database = fakeDatabase({ rows: { affectedRows: 0 }, fields: undefined, readOnly: false });
-  const result = await database.query('laragon', 'DELETE FROM departments WHERE 1 = 0');
+test('mysql manager — write on a writable connection — reports what the driver reported', async () => {
+  const database = fakeDatabase({
+    rows: {
+      fieldCount: 0,
+      affectedRows: 2,
+      insertId: 0,
+      info: 'Records: 2  Duplicates: 0  Warnings: 0',
+    },
+    fields: undefined,
+    readOnly: false,
+  });
+  const result = await database.query('laragon', "INSERT INTO departments (name) VALUES ('a'), ('b')");
+  assert.deepEqual(result.columns, []);
   assert.deepEqual(result.rows, []);
   assert.equal(result.row_count, 0);
+  assert.equal(result.affected_rows, 2);
+  assert.equal(result.insert_id, 0);
+  assert.equal(result.info, 'Records: 2  Duplicates: 0  Warnings: 0');
+  assert.equal(result.truncated, false);
+});
+
+test('mysql manager — write — keeps a zero affected-row count instead of dropping it', async () => {
+  const database = fakeDatabase({
+    rows: { fieldCount: 0, affectedRows: 0, insertId: 0, info: 'Rows matched: 0  Changed: 0  Warnings: 0' },
+    fields: undefined,
+    readOnly: false,
+  });
+  const result = await database.query('laragon', "UPDATE departments SET name = 'x' WHERE 1 = 0");
+  assert.equal(result.affected_rows, 0);
+  assert.match(result.info, /Rows matched: 0/);
+});
+
+test('mysql manager — DDL — reports the header without an empty info field', async () => {
+  const database = fakeDatabase({
+    rows: { fieldCount: 0, affectedRows: 0, insertId: 0, info: '' },
+    fields: undefined,
+    readOnly: false,
+  });
+  const result = await database.query('laragon', 'CREATE TEMPORARY TABLE probe (id int)');
+  assert.equal(result.affected_rows, 0);
+  assert.equal('info' in result, false);
+});
+
+test('mysql manager — CALL — returns the last row set and the trailing header count', async () => {
+  const fields = [{ name: 'id', columnType: 3, flags: 1 }];
+  const header = { fieldCount: 0, affectedRows: 1, insertId: 0, info: '' };
+  const database = fakeDatabase({
+    rows: [[[7]], header],
+    fields: [fields, undefined],
+    readOnly: false,
+  });
+  const result = await database.query('laragon', 'CALL refresh_and_list()');
+  assert.deepEqual(result.columns.map((column) => column.name), ['id']);
+  assert.deepEqual(result.rows, [[7]]);
+  assert.equal(result.affected_rows, 1);
+});
+
+test('mysql manager — CALL with no row set — reports the last header as the write', async () => {
+  const first = { fieldCount: 0, affectedRows: 3, insertId: 0, info: 'first' };
+  const last = { fieldCount: 0, affectedRows: 1, insertId: 0, info: 'last' };
+  const database = fakeDatabase({ rows: [first, last], fields: [undefined, undefined], readOnly: false });
+  const result = await database.query('laragon', 'CALL touch_rows()');
+  assert.deepEqual(result.rows, []);
+  assert.equal(result.affected_rows, 1);
+  assert.equal(result.info, 'last');
+});
+
+test('mysql manager — writable connection — sends DDL and CALL to the driver unguarded', async () => {
+  const database = fakeDatabase({
+    rows: { fieldCount: 0, affectedRows: 0, insertId: 0, info: '' },
+    fields: undefined,
+    readOnly: false,
+  });
+  await database.query('laragon', 'DROP TEMPORARY TABLE probe');
+  await database.query('laragon', 'CALL do_something()');
+  assert.deepEqual(database.calls.filter((call) => call[0] === 'query').map((call) => call[1]), [
+    'DROP TEMPORARY TABLE probe',
+    'CALL do_something()',
+  ]);
+});
+
+test('mysql manager — writable connection — keeps multipleStatements off in the pool config', () => {
+  // A writable connection is still one statement per call; the driver is the second enforcement
+  // point, so the option must stay fixed regardless of read_only.
+  const dialect = createMysqlDialect();
+  const config = dialect.buildPoolConfig({
+    host: '127.0.0.1',
+    port: 3306,
+    username: 'u',
+    password: '',
+    database: 'd',
+    connection_timeout_ms: 1000,
+    options: {},
+  }, null);
+  assert.equal(config.multipleStatements, false);
 });

@@ -16,7 +16,7 @@ import path from 'node:path';
 import mysql from 'mysql2/promise';
 import { CONFIG_PATH, readRawConfig } from './lib.mjs';
 
-export { CONFIG_PATH };
+export { CONFIG_PATH, readRawConfig };
 
 export {
   RawSession,
@@ -150,8 +150,8 @@ export function resolveMysqlConnection(name = MYSQL_CONNECTION_NAME) {
   };
 }
 
-export async function withMysqlDirect(fn) {
-  const connection = resolveMysqlConnection();
+export async function withMysqlDirect(fn, name = MYSQL_CONNECTION_NAME) {
+  const connection = resolveMysqlConnection(name);
   if (MYSQL_EXPECTED_LOGIN && connection.username !== MYSQL_EXPECTED_LOGIN) {
     throw new Error(
       `Refusing to connect as "${connection.username}". This skill only ever uses the login in SQL_MCP_VERIFY_MYSQL_LOGIN.`,

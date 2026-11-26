@@ -90,6 +90,51 @@ test('Workspace tools — DB Atelier result shapes — return compact status obj
   fs.rmSync(directory, { recursive: true, force: true });
 });
 
+test('Workspace tools — manage_query_tab execute — returns the execution result it used to discard', async () => {
+  const directory = tempDirectory();
+  const workspace = new WorkspaceStore(directory);
+  const executed = [];
+  const database = {
+    query: async (connection, sql) => {
+      executed.push({ connection, sql });
+      return {
+        columns: [],
+        row_count: 0,
+        rows: [],
+        truncated: false,
+        affected_rows: 1,
+        insert_id: 0,
+      };
+    },
+    defaultDatabase: () => 'master',
+    getConnection: () => ({ database: 'master', max_result_bytes: 262_144 }),
+    listConnections: () => [{ name: 'local' }],
+  };
+  const tools = createWorkspaceTools({ workspace, database });
+
+  const created = textResult(await tools.manage_query_tab({
+    action: 'create',
+    connection: 'local',
+    sql: 'DELETE FROM t WHERE id = 1',
+    execute: true,
+    title: 'Write',
+  }));
+  assert.equal(created.status, 'created');
+  assert.equal(created.result.affected_rows, 1);
+  assert.deepEqual(executed, [{ connection: 'local', sql: 'DELETE FROM t WHERE id = 1' }]);
+
+  const notExecuted = textResult(await tools.manage_query_tab({
+    action: 'create',
+    connection: 'local',
+    sql: 'SELECT 1',
+    title: 'Read',
+  }));
+  assert.equal('result' in notExecuted, false);
+  assert.equal(executed.length, 1);
+
+  fs.rmSync(directory, { recursive: true, force: true });
+});
+
 test('WorkspaceStore — missing query — returns an actionable error', () => {
   const directory = tempDirectory();
   const store = new WorkspaceStore(directory);

@@ -15,6 +15,7 @@ function makeContext() {
       name: 'local',
       db_type: 'mssql',
       database: 'master',
+      read_only: true,
       available_databases: ['master'],
     }],
     getConnection: () => ({ database: 'master', max_result_bytes: 262_144 }),
@@ -42,6 +43,10 @@ test('MCP server — initialize and tools/list — exposes all DB Atelier-compat
   await client.connect(clientTransport);
   const result = await client.listTools();
   const names = result.tools.map((tool) => tool.name).sort();
+  // The description is the only place a client learns that execute_sql has two result shapes.
+  const executeSql = result.tools.find((tool) => tool.name === 'execute_sql');
+  assert.match(executeSql.description, /affected_rows/);
+  assert.match(executeSql.description, /Read-only connections reject writes/);
   assert.deepEqual(names, [
     'describe_table',
     'execute_sql',
@@ -73,6 +78,7 @@ test('MCP server — list_connections — returns JSON text compatible with DB A
     name: 'local',
     db_type: 'mssql',
     database: 'master',
+    read_only: true,
     available_databases: ['master'],
   }]);
   await client.close();
